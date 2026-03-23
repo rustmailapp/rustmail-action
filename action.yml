@@ -1,0 +1,162 @@
+name: "RustMail"
+description: "Start a RustMail SMTP catcher and assert on captured emails in CI"
+author: "rustmailapp"
+
+branding:
+  icon: "mail"
+  color: "orange"
+
+inputs:
+  mode:
+    description: "Action mode: 'start' to launch the server, 'assert' to check captured emails"
+    required: true
+    default: "start"
+  smtp-port:
+    description: "SMTP port to listen on"
+    required: false
+    default: "1025"
+  http-port:
+    description: "HTTP/API port"
+    required: false
+    default: "8025"
+  assert-count:
+    description: "Minimum number of matching emails (assert mode)"
+    required: false
+    default: "1"
+  assert-subject:
+    description: "Filter by subject substring (assert mode)"
+    required: false
+  assert-sender:
+    description: "Filter by sender address (assert mode)"
+    required: false
+  assert-recipient:
+    description: "Filter by recipient address (assert mode)"
+    required: false
+  version:
+    description: "RustMail version to use (e.g., v0.1.0). Defaults to latest."
+    required: false
+    default: "latest"
+
+outputs:
+  http-port:
+    description: "HTTP port the server is listening on"
+    value: ${{ steps.start.outputs.http-port }}
+  smtp-port:
+    description: "SMTP port the server is listening on"
+    value: ${{ steps.start.outputs.smtp-port }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate mode
+      shell: bash
+      run: |
+        mode="${{ inputs.mode }}"
+        if [ "$mode" != "start" ] && [ "$mode" != "assert" ]; then
+          echo "::error::Invalid mode '$mode'. Must be 'start' or 'assert'."
+          exit 1
+        fi
+
+    - name: Determine platform
+      id: platform
+      if: inputs.mode == 'start'
+      shell: bash
+      run: |
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64)  target="x86_64-unknown-linux-gnu" ;;
+          Linux-aarch64) target="aarch64-unknown-linux-gnu" ;;
+          Darwin-x86_64) target="x86_64-apple-darwin" ;;
+          Darwin-arm64)  target="aarch64-apple-darwin" ;;
+          *) echo "::error::Unsupported platform: $(uname -s)-$(uname -m)"; exit 1 ;;
+        esac
+        echo "target=$target" >> "$GITHUB_OUTPUT"
+
+    - name: Download RustMail
+      if: inputs.mode == 'start'
+      shell: bash
+      env:
+        RUSTMAIL_VERSION: ${{ inputs.version }}
+        RUSTMAIL_TARGET: ${{ steps.platform.outputs.target }}
+      run: |
+        bin_dir="${RUNNER_TEMP}/rustmail-bin"
+        mkdir -p "$bin_dir"
+
+        if [ "$RUSTMAIL_VERSION" = "latest" ]; then
+          url="https://github.com/rustmailapp/rustmail/releases/latest/download/rustmail-${RUSTMAIL_TARGET}"
+        else
+          url="https://github.com/rustmailapp/rustmail/releases/download/${RUSTMAIL_VERSION}/rustmail-${RUSTMAIL_TARGET}"
+        fi
+
+        curl -fsSL "$url" -o "${bin_dir}/rustmail"
+        chmod +x "${bin_dir}/rustmail"
+        echo "${bin_dir}" >> "$GITHUB_PATH"
+
+    - name: Start RustMail server
+      id: start
+      if: inputs.mode == 'start'
+      shell: bash
+      env:
+        SMTP_PORT: ${{ inputs.smtp-port }}
+        HTTP_PORT: ${{ inputs.http-port }}
+      run: |
+        rustmail serve \
+          --ephemeral \
+          --bind 127.0.0.1 \
+          --smtp-port "$SMTP_PORT" \
+          --http-port "$HTTP_PORT" &
+        RUSTMAIL_PID=$!
+
+        for i in $(seq 1 30); do
+          if ! kill -0 "$RUSTMAIL_PID" 2>/dev/null; then
+            echo "::error::RustMail process exited unexpectedly"
+            exit 1
+          fi
+          if curl -sf "http://127.0.0.1:${HTTP_PORT}/api/v1/messages" > /dev/null 2>&1; then
+            echo "RustMail is ready (PID $RUSTMAIL_PID)"
+            echo "http-port=${HTTP_PORT}" >> "$GITHUB_OUTPUT"
+            echo "smtp-port=${SMTP_PORT}" >> "$GITHUB_OUTPUT"
+            echo "RUSTMAIL_PID=$RUSTMAIL_PID" >> "$GITHUB_ENV"
+            echo "RUSTMAIL_HTTP_PORT=${HTTP_PORT}" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "::error::RustMail failed to start within 30 seconds"
+        exit 1
+
+    - name: Assert emails
+      if: inputs.mode == 'assert'
+      shell: bash
+      env:
+        ASSERT_COUNT: ${{ inputs.assert-count }}
+        ASSERT_SUBJECT: ${{ inputs.assert-subject }}
+        ASSERT_SENDER: ${{ inputs.assert-sender }}
+        ASSERT_RECIPIENT: ${{ inputs.assert-recipient }}
+        HTTP_PORT: ${{ inputs.http-port }}
+      run: |
+        port="${RUSTMAIL_HTTP_PORT:-$HTTP_PORT}"
+        url="http://127.0.0.1:${port}/api/v1/assert/count?min=${ASSERT_COUNT}"
+
+        if [ -n "$ASSERT_SUBJECT" ]; then
+          encoded=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['ASSERT_SUBJECT']))")
+          url="${url}&subject=${encoded}"
+        fi
+
+        if [ -n "$ASSERT_SENDER" ]; then
+          encoded=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['ASSERT_SENDER']))")
+          url="${url}&sender=${encoded}"
+        fi
+
+        if [ -n "$ASSERT_RECIPIENT" ]; then
+          encoded=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['ASSERT_RECIPIENT']))")
+          url="${url}&recipient=${encoded}"
+        fi
+
+        echo "Asserting: $url"
+        if curl -fsS "$url"; then
+          echo ""
+          echo "Assertion passed"
+        else
+          echo "::error::Email assertion failed: expected at least ${ASSERT_COUNT} matching email(s)"
+          exit 1
+        fi
