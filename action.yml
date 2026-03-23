@@ -50,10 +50,11 @@ runs:
   steps:
     - name: Validate mode
       shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
       run: |
-        mode="${{ inputs.mode }}"
-        if [ "$mode" != "start" ] && [ "$mode" != "assert" ]; then
-          echo "::error::Invalid mode '$mode'. Must be 'start' or 'assert'."
+        if [ "$MODE" != "start" ] && [ "$MODE" != "assert" ]; then
+          echo "::error::Invalid mode '${MODE}'. Must be 'start' or 'assert'."
           exit 1
         fi
 
@@ -134,22 +135,28 @@ runs:
         ASSERT_RECIPIENT: ${{ inputs.assert-recipient }}
         HTTP_PORT: ${{ inputs.http-port }}
       run: |
+        if ! [[ "$ASSERT_COUNT" =~ ^[0-9]+$ ]]; then
+          echo "::error::assert-count must be a positive integer, got '${ASSERT_COUNT}'"
+          exit 1
+        fi
+
         port="${RUSTMAIL_HTTP_PORT:-$HTTP_PORT}"
         url="http://127.0.0.1:${port}/api/v1/assert/count?min=${ASSERT_COUNT}"
 
+        urlencode() {
+          python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.stdin.read().strip()))" <<< "$1"
+        }
+
         if [ -n "$ASSERT_SUBJECT" ]; then
-          encoded=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['ASSERT_SUBJECT']))")
-          url="${url}&subject=${encoded}"
+          url="${url}&subject=$(urlencode "$ASSERT_SUBJECT")"
         fi
 
         if [ -n "$ASSERT_SENDER" ]; then
-          encoded=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['ASSERT_SENDER']))")
-          url="${url}&sender=${encoded}"
+          url="${url}&sender=$(urlencode "$ASSERT_SENDER")"
         fi
 
         if [ -n "$ASSERT_RECIPIENT" ]; then
-          encoded=$(python3 -c "import urllib.parse, os; print(urllib.parse.quote(os.environ['ASSERT_RECIPIENT']))")
-          url="${url}&recipient=${encoded}"
+          url="${url}&recipient=$(urlencode "$ASSERT_RECIPIENT")"
         fi
 
         echo "Asserting: $url"
