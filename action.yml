@@ -1,4 +1,4 @@
-name: "RustMail"
+name: "RustMail Action"
 description: "Start a RustMail SMTP catcher and assert on captured emails in CI"
 author: "rustmailapp"
 
