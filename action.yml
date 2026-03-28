@@ -122,6 +122,7 @@ runs:
           fi
           sleep 1
         done
+        kill "$RUSTMAIL_PID" 2>/dev/null || true
         echo "::error::RustMail failed to start within 30 seconds"
         exit 1
 
