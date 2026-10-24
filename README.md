@@ -1,6 +1,6 @@
 # RustMail Action
 
-Start a RustMail SMTP catcher and assert on captured emails in CI.
+Start a [RustMail](https://rustmail.app) SMTP catcher and assert on captured emails in CI. Full guide: [docs.rustmail.app](https://docs.rustmail.app/ci-integration/github-action).
 
 ## Usage
 
